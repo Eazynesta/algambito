@@ -96,8 +96,11 @@ export function update(state, id, input, now) {
   if (action === 'status') return;
   if (action === 'name') {
     const name = String(input.name ?? '').trim();
+    const bio = String(input.bio ?? user.bio ?? '').trim();
     if (name.length < 2 || name.length > 24) fail('Enter a display name of 2–24 characters.');
+    if (bio.length > 160) fail('Keep your bio within 160 characters.');
     user.name = name;
+    user.bio = bio;
     return;
   }
   if (action === 'friend' || action === 'acceptFriend') {
@@ -225,14 +228,42 @@ function view(state, id, now) {
     match:match ? {...match, positions:undefined, seat:match.players.indexOf(id), names:match.players.map(p => p === '' ? match.bot + ' (AI)' : users[p].name)} : null};
 }
 
+function accountPage(state, id, code) {
+  const player = code ? Object.values(state.users).find(user => user.code === code) : state.users[id];
+  if (!player) return null;
+  const matches = Object.values(state.matches).reverse().filter(match =>
+    !match.bot && match.status === 'finished' && match.players.includes(player.id));
+  const draws = matches.filter(match => match.winner === null).length;
+  return {
+    name: player.name, code: player.code, bio: player.bio ?? '', wins: player.wins,
+    draws, losses: matches.length - draws - player.wins, own: player.id === id,
+    history: player.id === id ? matches.slice(0, 8).map(match => {
+      const seat = match.players.indexOf(id);
+      return {
+        opponent: state.users[match.players[1 - seat]].name,
+        result: match.winner === null ? 'Draw' : match.winner === seat ? 'Win' : 'Loss',
+        reason: match.reason,
+      };
+    }) : [],
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/' && request.method === 'GET') {
+    const id = request.headers.get('oai-authenticated-user-id');
+    const path = url.pathname;
+    if (request.method === 'GET' && ['/', '/play', '/dashboard', '/profile'].includes(path)) {
+      if (path !== '/' && !id) {
+        return Response.redirect(new URL('/signin-with-chatgpt?returnTo=' + encodeURIComponent(path + url.search), url), 302);
+      }
+      if (path === '/' && url.searchParams.has('invite')) {
+        return Response.redirect(new URL('/play' + url.search, url), 302);
+      }
+      if (path !== '/play') return new Response(ACCOUNT_HTML, {headers:{'content-type':'text/html; charset=utf-8'}});
       return new Response(HTML, {headers:{'content-type':'text/html; charset=utf-8'}});
     }
     if (url.pathname !== '/api') return new Response('Not found', {status:404});
-    const id = request.headers.get('oai-authenticated-user-id');
     if (!id) return Response.json({error:'Sign in to play.'}, {status:401});
     if (request.method !== 'GET' && (request.method !== 'POST' || request.headers.get('origin') !== url.origin)) {
       return Response.json({error:'Invalid request origin.'}, {status:403});
@@ -255,7 +286,9 @@ export default {
             .bind(next,row.revision).run();
           if (!result.meta.changes) continue;
         }
-        return Response.json(error ? {error} : view(state,id,now), {status:error ? 400 : 200,headers:{'cache-control':'no-store'}});
+        const result = error ? {error} : view(state,id,now);
+        if (!error && url.searchParams.has('account')) result.profile = accountPage(state, id, url.searchParams.get('code'));
+        return Response.json(result, {status:error ? 400 : 200,headers:{'cache-control':'no-store'}});
       }
       return Response.json({error:'Server busy. Try again.'}, {status:503});
     } catch (err) {
@@ -269,7 +302,7 @@ const HTML = String.raw`<!doctype html><html lang="en"><head><meta charset="utf-
 <style>
 :root{color-scheme:dark;--ink:#f4efe3;--muted:#aaa6a0;--panel:#201f23;--line:#353238;--gold:#f4c775;--red:#e67664}
 *{box-sizing:border-box}body{margin:0;background:#151418;color:var(--ink);font:15px system-ui,sans-serif}header{border-bottom:1px solid var(--line);padding:18px clamp(18px,5vw,72px);display:flex;justify-content:space-between;align-items:center}.brand{font: bold 26px Georgia,serif}.brand span,.balance{color:var(--gold)}main{max-width:1200px;margin:auto;padding:36px 24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,350px);gap:38px}h1,h2{font-family:Georgia,serif;margin:0 0 14px}h1{font-size:clamp(29px,5vw,52px);letter-spacing:-.04em}h2{font-size:22px}p{color:var(--muted);margin:0 0 15px;line-height:1.45}.board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(8,minmax(0,1fr));border:7px solid #352a27;border-radius:9px;overflow:hidden;aspect-ratio:1;box-shadow:0 16px 45px #0006}.cell{border:0;border-radius:0;padding:0;display:grid;place-items:center;position:relative;min-width:0;background:#e6cba9}.cell.dark{background:#7b5147}.cell.selected{box-shadow:inset 0 0 0 4px #ffdb75}.cell.hint:after{content:'';width:23%;aspect-ratio:1;border-radius:50%;background:#ffdf8a;position:absolute}.piece{width:73%;aspect-ratio:1;border-radius:50%;display:grid;place-items:center;background:#ae3f36;color:#ffe4aa;border:3px solid #e77b69;box-shadow:inset 0 0 0 4px #0002,0 4px 3px #25100d80;font-size:clamp(11px,3vw,28px)}.piece.black{background:#29272e;border-color:#57505b;color:#fff0bd}.bar{display:flex;align-items:center;justify-content:space-between;padding:13px 0;color:var(--muted);min-height:48px}.timer{font:700 17px ui-monospace,monospace;color:var(--gold)}aside{display:grid;gap:15px;align-content:start}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:19px}.row{display:flex;align-items:center;gap:8px;margin:9px 0;flex-wrap:wrap}.split{justify-content:space-between}button,a,input{font:inherit}button,a.action{background:#373239;color:var(--ink);border:1px solid #4c444e;border-radius:7px;padding:9px 12px;text-decoration:none;cursor:pointer}.primary{background:var(--gold)!important;color:#271a12!important;border-color:var(--gold)!important;font-weight:700}button:disabled{cursor:default;opacity:.65}button.cell{border:0;border-radius:0;padding:0;background:#e6cba9;opacity:1}button.cell.dark{background:#7b5147}input{min-width:0;max-width:100%;background:#17161a;color:var(--ink);border:1px solid #4c444e;border-radius:6px;padding:9px;width:155px}code{color:var(--gold);overflow-wrap:anywhere}.notice{padding:12px;background:#382a23;border:1px solid #b57952;border-radius:8px;margin:10px 0;color:#ffdeac}.flash{animation:pulse 1.2s alternate 4}@keyframes pulse{to{background:#7c422a}}@media(prefers-reduced-motion:reduce){.flash{animation:none}}#error{color:#ff9a89;min-height:20px}ol{padding-left:22px;margin-bottom:0}li{padding:5px 0}small{color:var(--muted)}@media(max-width:760px){main{grid-template-columns:1fr;gap:20px;padding:22px 14px}}
-</style></head><body><header><div class="brand"><span>♛</span> Crownline</div><div class="balance" id="balance">Checkers</div></header>
+</style></head><body><header style="flex-wrap:wrap;gap:12px"><a class="brand" style="color:inherit;text-decoration:none" href="/"><span>♛</span> Crownline</a><nav style="display:flex;gap:12px;flex-wrap:wrap"><a class="action" href="/dashboard">Dashboard</a><a class="action" href="/profile">My profile</a></nav><div class="balance" id="balance">Checkers</div></header>
 <main><section><h1>Play checkers</h1><div class="bar"><span id="opponent">Opponent</span><span id="clock" class="timer"></span></div><div id="board" class="board" aria-label="Checkers board"></div><div class="bar"><span id="player">You</span><span id="turn"></span></div><div id="warning" aria-live="polite"></div><p id="error" role="alert"></p></section>
 <aside><section class="panel"><h2>Play online</h2><div id="play"></div></section><section class="panel"><h2>Top 3 by wins</h2><div id="leaderboard"></div></section><section class="panel"><h2>Friends</h2><div id="friends"></div></section></aside></main>
 <script>
@@ -372,7 +405,7 @@ function render(){
   }
   if(m?.bot)play='<p>Practice vs '+escapeHtml(m.bot)+' · '+m.wallet+' test coins</p>'+play;
   put('play',play);
-  put('leaderboard',data.leaders.length?'<ol>'+data.leaders.map(p=>'<li>'+escapeHtml(p.name)+' · '+p.wins+' wins</li>').join('')+'</ol>':'<p>No wins yet.</p>');
+  put('leaderboard',data.leaders.length?'<ol>'+data.leaders.map(p=>'<li><a style="color:inherit" href="/profile?code='+encodeURIComponent(p.code)+'">'+escapeHtml(p.name)+'</a> · '+p.wins+' wins</li>').join('')+'</ol>':'<p>No wins yet.</p>');
   put('friends','<small>Your player code</small> <code>'+escapeHtml(data.me.code)+'</code><form data-form="friend" class="row"><input name="target" placeholder="Player code" aria-label="Friend’s player code" required>'+button('Add friend','friend')+'</form>'+
     '<form class="row" data-form="name"><input name="name" placeholder="Display name" aria-label="Display name" minlength="2" maxlength="24" required>'+button('Save name','name')+'</form>'+
     data.friends.map(f=>'<div class="row split">'+escapeHtml(f.name)+(f.accepted?(open?'':button('Challenge','challenge',target(f.code))):f.incoming?button('Accept','acceptFriend',target(f.code)):'<small>Pending</small>')+'</div>').join('')+
@@ -400,7 +433,7 @@ document.addEventListener('click',async event=>{
   if(btn.closest('form'))return;
   const action=btn.dataset.action;if(!action)return;
   if(action==='copy'){
-    const url=new URL(location.origin);url.searchParams.set('invite',data.match.id);
+    const url=new URL('/play',location.origin);url.searchParams.set('invite',data.match.id);
     try{await navigator.clipboard.writeText(url.href);btn.textContent='Link copied';}
     catch{window.prompt('Copy invite link',url.href);}
     return;
@@ -411,7 +444,76 @@ document.addEventListener('click',async event=>{
   if(action==='cancelQueue')queueing=false;
   const m=data?.match;
   await api(action,{target:btn.dataset.target,...(action==='agree'?{stakes:m.stakes,unequal:m.stakes[m.seat]>m.stakes[1-m.seat]}:{})});
-  if(action==='join'&&data?.match?.players.length===2&&data.match.id===btn.dataset.target){invite=null;history.replaceState(null,'','/');render();}
+  if(action==='join'&&data?.match?.players.length===2&&data.match.id===btn.dataset.target){invite=null;history.replaceState(null,'','/play');render();}
 });
 render();api();setInterval(()=>api(queueing?'queue':'status'),1500);setInterval(tick,250);
+</script></body></html>`;
+
+const ACCOUNT_HTML = String.raw`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Crownline Checkers</title>
+<style>
+:root{color-scheme:dark;--bg:#151418;--panel:#211f24;--line:#39333b;--text:#f4efe3;--muted:#bcb4b0;--gold:#f4c775}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,sans-serif}a{color:var(--gold)}header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:20px max(22px,calc((100% - 1110px)/2));border-bottom:1px solid var(--line)}nav{display:flex;align-items:center;gap:18px;flex-wrap:wrap}nav a,.brand{text-decoration:none}.brand{font:bold 26px Georgia,serif;color:var(--text)}.brand span{color:var(--gold)}main{max-width:1154px;margin:auto;padding:48px 22px}h1,h2{font-family:Georgia,serif;margin:0 0 15px}h1{font-size:clamp(38px,7vw,76px);line-height:1.02;letter-spacing:-.045em}h2{font-size:25px}p{color:var(--muted);line-height:1.55}.hero,.columns{display:grid;grid-template-columns:1.2fr 1fr;gap:28px;align-items:center}.hero{min-height:62vh}.hero p{font-size:19px;max-width:450px}.art{aspect-ratio:1;display:grid;grid-template:repeat(8,1fr)/repeat(8,1fr);border:8px solid #392c2a;border-radius:14px;overflow:hidden;transform:rotate(-3deg);margin:20px;box-shadow:0 20px 55px #0008}.tile{display:grid;place-items:center;background:#e5caa8}.tile.dark{background:#7b5147}.disc{width:72%;aspect-ratio:1;border-radius:50%;background:#ad4539;border:3px solid #e77b69;box-shadow:inset 0 0 0 4px #0002,0 4px 4px #0007}.disc.black{background:#29272e;border-color:#57505b}.action,button{display:inline-block;padding:10px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);text-decoration:none;font:inherit;cursor:pointer}.primary{background:var(--gold);color:#261a12;border-color:var(--gold);font-weight:700}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:15px 0}.columns{align-items:start}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:0 0 16px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.stat strong{display:block;font-size:25px}.stat small{color:var(--muted)}ul,ol{padding-left:22px}li{margin:10px 0}label{display:block;margin:12px 0}input,textarea{display:block;width:100%;margin-top:6px;padding:10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font:inherit}code{color:var(--gold);overflow-wrap:anywhere}#feedback{min-height:1.5em;color:var(--gold)}@media(max-width:700px){.hero,.columns{grid-template-columns:1fr}.art{max-width:370px;margin:12px}.hero{min-height:0}main{padding-top:32px}}
+</style></head><body><header><a class="brand" href="/"><span>♛</span> Crownline</a><nav id="nav"><a href="/signin-with-chatgpt?returnTo=%2Fdashboard" target="_top">Sign in</a></nav></header>
+<main id="content" aria-live="polite"></main>
+<script>
+const content=document.getElementById('content');
+const nav=document.getElementById('nav');
+const page=location.pathname;
+const code=new URLSearchParams(location.search).get('code')||'';
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const profileLink=player=>'<a href="/profile?code='+encodeURIComponent(player.code)+'">'+esc(player.name)+'</a>';
+const signIn='<a class="action primary" href="/signin-with-chatgpt?returnTo=%2Fdashboard" target="_top">Sign in with ChatGPT</a>';
+const stats=p=>'<div class="stats">'+[['Wins',p.wins],['Losses',p.losses],['Draws',p.draws]].map(([label,count])=>'<div class="stat"><strong>'+count+'</strong><small>'+label+'</small></div>').join('')+'</div>';
+function landing(signedIn){
+  const tiles=Array.from({length:64},(_,i)=>{
+    const row=i>>3, dark=(row+i%8)%2;
+    return '<span class="tile '+(dark?'dark':'')+'">'+(dark&&(row<3||row>4)?'<span class="disc '+(row<3?'black':'')+'"></span>':'')+'</span>';
+  }).join('');
+  content.innerHTML='<section class="hero"><div><h1>Play checkers online</h1><p>Challenge a friend, find a quick match, or practice against three AI opponents.</p><div class="row">'+(signedIn?'<a class="action primary" href="/play">Play checkers</a><a class="action" href="/dashboard">Dashboard</a>':signIn)+'</div></div><div class="art" aria-hidden="true">'+tiles+'</div></section>';
+}
+function dashboard(data){
+  const p=data.profile, m=data.match;
+  const inProgress=m&&m.status!=='finished';
+  content.innerHTML='<h1>Dashboard</h1><p>Signed in as '+esc(p.name)+'.</p><div class="columns"><div><section class="panel"><h2>Play</h2><p>'+ (inProgress?'Your match is ready to resume.':'Start a quick match, challenge a friend, or practice against AI.')+'</p><a class="action primary" href="/play">'+(inProgress?'Resume match':'Open game lobby')+'</a></section><section class="panel"><h2>Recent online matches</h2>'+(p.history.length?'<ul>'+p.history.map(entry=>'<li><strong>'+entry.result+'</strong> vs '+esc(entry.opponent)+' · '+esc(entry.reason)+'</li>').join('')+'</ul>':'<p>Your completed multiplayer matches will appear here.</p>')+'</section></div><div><section class="panel"><h2>Your account</h2><p><strong>'+data.me.coins+' virtual coins</strong></p>'+stats(p)+'<div class="row"><a href="/profile">View profile</a></div></section><section class="panel"><h2>Top 3 by wins</h2>'+(data.leaders.length?'<ol>'+data.leaders.map(p=>'<li>'+profileLink(p)+' · '+p.wins+' wins</li>').join('')+'</ol>':'<p>No wins yet.</p>')+'</section><section class="panel"><h2>Friends</h2>'+(data.friends.some(f=>f.accepted)?'<ul>'+data.friends.filter(f=>f.accepted).map(f=>'<li>'+profileLink(f)+'</li>').join('')+'</ul>':'<p>Add friends from the game lobby.</p>')+'</section></div></div>';
+}
+function profile(data){
+  const p=data.profile;
+  if(!p){content.innerHTML='<h1>Player unavailable</h1><a href="/dashboard">Back to dashboard</a>';return;}
+  document.title=p.name+' · Crownline Checkers';
+  content.innerHTML='<h1>'+esc(p.name)+'</h1><div class="columns"><section class="panel"><h2>Online record</h2>'+stats(p)+(p.bio?'<p>'+esc(p.bio)+'</p>':'')+'<p>Player code <code>'+esc(p.code)+'</code></p><a href="/profile?code='+encodeURIComponent(p.code)+'">Profile link</a></section>'+
+    (p.own?'<section class="panel"><h2>Edit profile</h2><form id="edit"><label>Display name<input name="name" required minlength="2" maxlength="24" value="'+esc(p.name)+'"></label><label>Bio<textarea name="bio" rows="4" maxlength="160">'+esc(p.bio)+'</textarea></label><button class="primary">Save profile</button><p id="feedback" role="status"></p></form></section>':'')+'</div>';
+}
+async function load(){
+  if(page==='/')landing(false);
+  try{
+    const url=page==='/'?'/api':'/api?account=1'+(page==='/profile'&&code?'&code='+encodeURIComponent(code):'');
+    const response=await fetch(url);
+    if(response.status===401){
+      if(page!=='/')content.innerHTML='<h1>Sign in</h1>'+signIn;
+      return;
+    }
+    if(!response.ok)throw Error('Could not load your Crownline account.');
+    const data=await response.json();
+    nav.innerHTML='<a href="/play">Play</a><a href="/dashboard">Dashboard</a><a href="/profile">My profile</a><a href="/signout-with-chatgpt?returnTo=%2F" target="_top">Sign out</a>';
+    if(page==='/')landing(true);
+    if(page==='/dashboard')dashboard(data);
+    if(page==='/profile')profile(data);
+  }catch(err){if(page!=='/')content.textContent=err.message;}
+}
+document.addEventListener('submit',async event=>{
+  if(event.target.id!=='edit')return;
+  event.preventDefault();
+  const form=event.target, submit=form.querySelector('button'), feedback=document.getElementById('feedback');
+  submit.disabled=true;
+  try{
+    const response=await fetch('/api',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'name',...Object.fromEntries(new FormData(form))})});
+    const data=await response.json();
+    if(!response.ok)throw Error(data.error);
+    await load();
+    const status=document.getElementById('feedback');
+    if(status)status.textContent='Profile saved.';
+  }catch(err){feedback.textContent=err.message;}
+  finally{submit.disabled=false;}
+});
+load();
 </script></body></html>`;
