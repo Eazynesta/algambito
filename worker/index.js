@@ -28,11 +28,35 @@ const TURN = 120000;
 const WARNING = 15000;
 const fail = message => { throw new Error(message); };
 const other = seat => 1 - seat;
+const BOTS = [
+  {name:'Scout', level:'Easy', stake:25},
+  {name:'Rook', level:'Medium', stake:50},
+  {name:'Crown', level:'Hard', stake:100},
+];
+
+function botScore(cells, move, level) {
+  const next = cells.slice();
+  const piece = next[move.from];
+  next[move.from] = 0;
+  next[move.to] = (move.to >> 3) === 7 ? -2 : piece;
+  if (move.capture !== undefined) next[move.capture] = 0;
+  const captured = move.capture === undefined ? 0 : cells[move.capture];
+  const promotion = piece !== next[move.to] ? 3 : 0;
+  const center = 3.5 - Math.abs(move.to % 8 - 3.5);
+  const replies = moves(next, 1);
+  const danger = replies.some(reply => reply.capture === move.to) ? 5 : 0;
+  return captured * 3 + promotion + center / 4 - (level === 2 ? danger : 0);
+}
 
 function settle(state, match, winner, reason) {
   match.status = 'finished';
   match.winner = winner;
   match.reason = reason;
+  if (match.bot) {
+    if (winner === null) match.wallet += match.stakes[0];
+    if (winner === 0) match.wallet += match.stakes[0] + match.stakes[1];
+    return;
+  }
   if (winner === null) {
     match.players.forEach((id, i) => { state.users[id].coins += match.stakes[i]; });
   } else {
@@ -47,10 +71,13 @@ function startMatch(players) {
     cells:board(), turn:0, forced:null, quiet:0, positions:{}, drawOffer:null};
 }
 function activate(state, match, now) {
-  for (let i = 0; i < 2; i++) {
-    if (state.users[match.players[i]].coins < match.stakes[i]) fail('A player has insufficient coins.');
+  if (match.bot) match.wallet -= match.stakes[0];
+  else {
+    for (let i = 0; i < 2; i++) {
+      if (state.users[match.players[i]].coins < match.stakes[i]) fail('A player has insufficient coins.');
+    }
+    match.players.forEach((id, i) => { state.users[id].coins -= match.stakes[i]; });
   }
-  match.players.forEach((id, i) => { state.users[id].coins -= match.stakes[i]; });
   match.status = 'playing';
   match.deadline = now + TURN;
   match.extended = false;
@@ -83,10 +110,19 @@ export function update(state, id, input, now) {
     return;
   }
   if (action === 'cancelQueue') { delete state.queue[id]; return; }
-  if (['invite','join','queue','challenge'].includes(action)) {
+  if (['invite','join','queue','challenge','practice'].includes(action)) {
     if (busy(id)) fail('Finish or leave your current match first.');
     let match;
-    if (action === 'join') {
+    if (action === 'practice') {
+      const level = BOTS.findIndex(bot => bot.name === target);
+      if (level < 0) fail('Choose a practice opponent.');
+      match = startMatch([id, '']);
+      match.bot = BOTS[level].name;
+      match.level = level;
+      match.wallet = 500;
+      match.stakes[1] = BOTS[level].stake;
+      match.agreed[1] = true;
+    } else if (action === 'join') {
       match = state.matches[target];
       if (match?.status !== 'lobby' || match.players.length !== 1) fail('This invite is unavailable.');
       if (match.invited && match.invited !== id) fail('This challenge belongs to another player.');
@@ -114,8 +150,8 @@ export function update(state, id, input, now) {
   if (match.status === 'lobby') {
     if (action === 'leave') { delete state.matches[matchId]; return; }
     if (action === 'stake') {
-      if (!Number.isSafeInteger(amount) || amount < 0 || amount > user.coins) fail('Enter a whole coin amount within your balance.');
-      if (match.stakes[seat] !== amount) { match.stakes[seat] = amount; match.agreed = [false,false]; }
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > (match.bot ? match.wallet : user.coins)) fail('Enter a whole coin amount within your balance.');
+      if (match.stakes[seat] !== amount) { match.stakes[seat] = amount; match.agreed = [false,Boolean(match.bot)]; }
       return;
     }
     if (action !== 'agree' || match.players.length !== 2 || match.stakes.includes(null)) fail('Both players must submit stakes first.');
@@ -127,7 +163,7 @@ export function update(state, id, input, now) {
   }
   if (action === 'resign') { settle(state, match, other(seat), 'Resignation'); return; }
   if (action === 'draw') {
-    if (match.drawOffer === other(seat)) settle(state, match, null, 'Draw agreed');
+    if (match.bot || match.drawOffer === other(seat)) settle(state, match, null, 'Draw agreed');
     else match.drawOffer = seat;
     return;
   }
@@ -142,6 +178,18 @@ export function update(state, id, input, now) {
   const side = seat === 0 ? 1 : -1;
   const move = moves(match.cells, side, match.forced).find(m => m.from === from && m.to === to);
   if (!move) fail('That move is illegal.');
+  applyMove(state, match, seat, move, now);
+  while (match.bot && match.status === 'playing' && match.turn === 1) {
+    const options = moves(match.cells, -1, match.forced);
+    const choice = match.level === 0 ? options[Math.floor(Math.random() * options.length)]
+      : options.reduce((best, option) => botScore(match.cells, option, match.level) > botScore(match.cells, best, match.level) ? option : best);
+    applyMove(state, match, 1, choice, now);
+  }
+}
+
+function applyMove(state, match, seat, move, now) {
+  const {from, to} = move;
+  const side = seat === 0 ? 1 : -1;
   const piece = match.cells[from];
   const crowned = Math.abs(piece) === 1 && (to >> 3) === (side === 1 ? 0 : 7);
   match.cells[from] = 0;
@@ -168,13 +216,13 @@ function view(state, id, now) {
   const profile = p => ({name:p.name, code:p.code, wins:p.wins});
   const match = Object.values(matches).reverse().find(m => m.players.includes(id) && m.status !== 'finished')
     ?? Object.values(matches).reverse().find(m => m.players.includes(id));
-  return {now, me:users[id], queued:queue[id] > now - 12000,
+  return {now, me:users[id], bots:BOTS, queued:queue[id] > now - 12000,
     leaders:Object.values(users).filter(p => p.wins > 0).sort((a,b) => b.wins-a.wins || a.name.localeCompare(b.name)).slice(0,3).map(profile),
     friends:Object.values(friends).filter(r => r.from === id || r.to === id)
       .map(r => ({...profile(users[r.from === id ? r.to : r.from]), incoming:r.to === id, accepted:r.accepted})),
     challenges:Object.values(matches).filter(m => m.invited === id && m.players.length === 1)
       .map(m => ({id:m.id, name:users[m.players[0]].name})),
-    match:match ? {...match, positions:undefined, seat:match.players.indexOf(id), names:match.players.map(p => users[p].name)} : null};
+    match:match ? {...match, positions:undefined, seat:match.players.indexOf(id), names:match.players.map(p => p === '' ? match.bot + ' (AI)' : users[p].name)} : null};
 }
 
 export default {
@@ -306,11 +354,13 @@ function render(){
     if(invite)play+=button('Join private match','join',target(invite));
     play+='<div class="row">'+(queueing?button('Cancel search','cancelQueue'):button('Quick match','queue','class="primary"')+button('Private link','invite'))+'</div>';
     if(queueing)play+='<p>Searching for an opponent…</p>';
+    play+='<h2>Practice vs AI</h2><p>Each practice match starts with 500 test coins.</p><div class="row">'+
+      data.bots.map(bot=>button(escapeHtml(bot.name+' · '+bot.level),'practice',target(bot.name))).join('')+'</div>';
   }else if(m.status==='lobby'){
     if(m.players.length===1)play=m.invited?'<p>Waiting for your friend to accept.</p>':'<p>Share this private match link.</p>'+button('Copy invite link','copy');
     else play='<p>Both players must approve the stakes.</p>';
     const [mine,theirs]=[m.stakes[seat],m.stakes[1-seat]];
-    play+='<form class="row" data-form="stake"><input name="amount" type="number" min="0" max="'+data.me.coins+'" value="'+(mine??0)+'" aria-label="Your stake" required>'+button('Set stake','stake')+'</form>';
+    play+='<form class="row" data-form="stake"><input name="amount" type="number" min="0" max="'+(m.bot?m.wallet:data.me.coins)+'" value="'+(mine??theirs??0)+'" aria-label="Your stake" required>'+button('Set stake','stake')+'</form>';
     play+='<p>Your stake '+(mine??'—')+' · Opponent '+(theirs??'—')+'</p>';
     if(mine!==null&&theirs!==null){
       if(mine!==theirs)play+='<div class="notice flash" role="alert">Unequal stakes. '+(mine>theirs?'Are you sure you want to risk '+mine+' coins when your opponent risks '+theirs+'?':'Your opponent is risking more coins than you.')+'</div>';
@@ -320,6 +370,7 @@ function render(){
   }else{
     play='<p>Stakes · You '+m.stakes[seat]+' / Opponent '+m.stakes[1-seat]+'</p><div class="row">'+button(m.drawOffer===1-seat?'Accept draw':m.drawOffer===seat?'Draw offered':'Offer draw','draw',m.drawOffer===seat?'disabled':'')+button('Resign','resign')+'</div>';
   }
+  if(m?.bot)play='<p>Practice vs '+escapeHtml(m.bot)+' · '+m.wallet+' test coins</p>'+play;
   put('play',play);
   put('leaderboard',data.leaders.length?'<ol>'+data.leaders.map(p=>'<li>'+escapeHtml(p.name)+' · '+p.wins+' wins</li>').join('')+'</ol>':'<p>No wins yet.</p>');
   put('friends','<small>Your player code</small> <code>'+escapeHtml(data.me.code)+'</code><form data-form="friend" class="row"><input name="target" placeholder="Player code" aria-label="Friend’s player code" required>'+button('Add friend','friend')+'</form>'+
@@ -355,6 +406,7 @@ document.addEventListener('click',async event=>{
     return;
   }
   if(action==='resign'&&!confirm('Resign and forfeit your stake?'))return;
+  if(action==='practice')queueing=false;
   if(action==='queue')queueing=true;
   if(action==='cancelQueue')queueing=false;
   const m=data?.match;
