@@ -3,6 +3,6 @@
   "outputDirectory": "public",
   "rewrites": [
     { "source": "/", "destination": "/api/crownline?_crownline_path=/" },
-    { "source": "/:path(play|dashboard|profile|api|signin-with-chatgpt|signout-with-chatgpt)", "destination": "/api/crownline?_crownline_path=/:path" }
+    { "source": "/:path(play|dashboard|profile|api|sign-in|sign-out|signin-with-chatgpt)", "destination": "/api/crownline?_crownline_path=/:path" }
   ]
 }

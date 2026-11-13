@@ -63,7 +63,7 @@ async function handle(request) {
   const url = new URL(request.url);
   if (url.pathname === '/api/crownline') {
     const path = url.searchParams.get('_crownline_path');
-    if (!['/', '/play', '/dashboard', '/profile', '/api', '/signin-with-chatgpt', '/signout-with-chatgpt'].includes(path)) {
+    if (!['/', '/play', '/dashboard', '/profile', '/api', '/sign-in', '/sign-out', '/signin-with-chatgpt'].includes(path)) {
       return new Response('Not found', { status: 404 });
     }
     url.pathname = path;
@@ -82,14 +82,17 @@ async function handle(request) {
     return new Response('Invalid request origin.', { status: 403 });
   }
   const returnTo = safeReturn(url.searchParams.get('returnTo'));
-  if (url.pathname === '/signin-with-chatgpt') {
+  if (url.pathname === '/signin-with-chatgpt' && request.method === 'GET') {
+    return redirect('/sign-in' + url.search);
+  }
+  if (url.pathname === '/sign-in') {
     if (request.method === 'GET') return authPage();
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     const form = await request.formData();
     const signup = form.get('mode') === 'signup';
     const email = form.get('email'), password = form.get('password');
     if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) return authPage('Enter your email and password.');
-    const endpoint = signup ? 'signup?redirect_to=' + encodeURIComponent(url.origin + '/signin-with-chatgpt') : 'token?grant_type=password';
+    const endpoint = signup ? 'signup?redirect_to=' + encodeURIComponent(url.origin + '/sign-in') : 'token?grant_type=password';
     const result = await auth(endpoint, { method: 'POST', body: { email, password } });
     if (!result.ok) return authPage(signup ? 'Could not create the account. Check your email and password, or try again later.' : 'Could not sign in. Check your credentials and confirm your email.');
     const session = await result.json();
@@ -98,7 +101,7 @@ async function handle(request) {
     setSession(response, session);
     return response;
   }
-  if (url.pathname === '/signout-with-chatgpt') {
+  if (url.pathname === '/sign-out') {
     if (access) await auth('logout?scope=local', { method: 'POST', token: access });
     const response = redirect('/');
     setSession(response, null);
@@ -119,7 +122,9 @@ async function handle(request) {
     const user = await verified.json();
     if (user.id) headers.set('oai-authenticated-user-id', user.id);
   }
-  const result = await worker.fetch(new Request(url, new Request(request, { headers })), { DB: database(), authLabel: 'Sign in with email' });
+  const result = await worker.fetch(new Request(url, new Request(request, { headers })), {
+    DB: database(), authLabel: 'Sign in with email', signInPath: '/sign-in', signOutPath: '/sign-out',
+  });
   const response = new Response(result.body, result);
   if (session && verified?.ok) setSession(response, session);
   return response;

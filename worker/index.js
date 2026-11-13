@@ -253,15 +253,18 @@ export default {
     const url = new URL(request.url);
     const id = request.headers.get('oai-authenticated-user-id');
     const path = url.pathname;
+    const signInPath = env.signInPath ?? '/signin-with-chatgpt';
+    const renderPage = (page) => page.replaceAll('/signin-with-chatgpt', signInPath)
+      .replaceAll('/signout-with-chatgpt', env.signOutPath ?? '/signout-with-chatgpt')
+      .replaceAll('Sign in with ChatGPT', env.authLabel ?? 'Sign in with ChatGPT');
     if (request.method === 'GET' && ['/', '/play', '/dashboard', '/profile'].includes(path)) {
       if (path !== '/' && !id) {
-        return Response.redirect(new URL('/signin-with-chatgpt?returnTo=' + encodeURIComponent(path + url.search), url), 302);
+        return Response.redirect(new URL(signInPath + '?returnTo=' + encodeURIComponent(path + url.search), url), 302);
       }
       if (path === '/' && url.searchParams.has('invite')) {
         return Response.redirect(new URL('/play' + url.search, url), 302);
       }
-      if (path !== '/play') return new Response(ACCOUNT_HTML.replace('Sign in with ChatGPT', env.authLabel ?? 'Sign in with ChatGPT'), {headers:{'content-type':'text/html; charset=utf-8'}});
-      return new Response(HTML, {headers:{'content-type':'text/html; charset=utf-8'}});
+      return new Response(renderPage(path === '/play' ? HTML : ACCOUNT_HTML), {headers:{'content-type':'text/html; charset=utf-8'}});
     }
     if (url.pathname !== '/api') return new Response('Not found', {status:404});
     if (!id) return Response.json({error:'Sign in to play.'}, {status:401});
