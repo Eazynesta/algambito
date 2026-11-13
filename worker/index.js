@@ -260,7 +260,7 @@ export default {
       if (path === '/' && url.searchParams.has('invite')) {
         return Response.redirect(new URL('/play' + url.search, url), 302);
       }
-      if (path !== '/play') return new Response(ACCOUNT_HTML, {headers:{'content-type':'text/html; charset=utf-8'}});
+      if (path !== '/play') return new Response(ACCOUNT_HTML.replace('Sign in with ChatGPT', env.authLabel ?? 'Sign in with ChatGPT'), {headers:{'content-type':'text/html; charset=utf-8'}});
       return new Response(HTML, {headers:{'content-type':'text/html; charset=utf-8'}});
     }
     if (url.pathname !== '/api') return new Response('Not found', {status:404});
